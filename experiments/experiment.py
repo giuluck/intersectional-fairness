@@ -1,3 +1,4 @@
+import gc
 import hashlib
 import itertools
 import json
@@ -7,25 +8,40 @@ import pickle
 import shutil
 import time
 from abc import abstractmethod
-from typing import Any, Dict, Iterable, Union, Optional, Literal, List, Tuple
+from typing import Dict, Any, List, Iterable, Callable, Tuple, Optional
+from typing import Union, Literal
 
+import networkx as nx
+import numpy as np
 import pandas as pd
+import pytorch_lightning as pl
+import seaborn as sns
+from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from items.item import Item
+from items import Dataset, Metric, Loss, Fairness, Model
+from items import Item
+
+PALETTE: List[str] = ['#000000', '#377eb8', '#ff7f00', '#4daf4a']
+"""The color palette for plotting data."""
+
+ITERATIONS: int = 10
+"""The number of Moving Targets iterations,"""
+
+SEED: int = 0
+"""The random seed used in the experiment."""
 
 
 class Experiment:
-    """A custom experiment, with utility methods to run factorial design experiments."""
+    """An experiment where a neural network is constrained so that the correlation between a protected variable and the
+    target is reduced."""
 
     @classmethod
-    @abstractmethod
     def alias(cls) -> str:
         """The alias of the class of experiments."""
-        pass
+        return 'experiment'
 
     @classmethod
-    @abstractmethod
     def routine(cls, experiment: 'Experiment') -> Dict[str, Any]:
         """Defines the routine of the experiment.
 
@@ -35,7 +51,24 @@ class Experiment:
         :return:
             A dictionary containing the results of the experiment.
         """
-        pass
+        gc.collect()
+        pl.seed_everything(SEED, workers=True)
+        output = Model(indicator=experiment._indicator).run(
+            dataset=experiment._dataset,
+            folds=experiment._folds,
+            fold=experiment._fold,
+            seed=SEED
+        )
+        return dict(
+            metric={},
+            train_inputs=output.train_inputs,
+            train_target=output.train_target,
+            train_predictions=output.train_predictions,
+            val_inputs=output.val_inputs,
+            val_target=output.val_target,
+            val_predictions=output.val_predictions,
+            **output.additional
+        )
 
     @classmethod
     def signatures(cls, **parameters: Any) -> Dict[Any, Dict[str, Any]]:
@@ -101,11 +134,32 @@ class Experiment:
         """
         return os.path.join(folder, cls.alias(), key)
 
-    def __init__(self, folder: str):
+    def __init__(self,
+                 folder: str,
+                 dataset: Dataset,
+                 indicator: Optional[str],
+                 folds: int,
+                 fold: int):
         """
         :param folder:
-            The folder where results are stored and loaded.
+            The folder where the experiment will be stored/loaded.
+
+        :param dataset:
+            The dataset used in the experiment.
+
+        :param indicator:
+            The indicator to use as regularizer, or None for no regularizer.
+
+        :param folds:
+            The number of folds for k-fold cross-validation.
+
+        :param fold:
+            The fold that is used for training the model.
         """
+        self._dataset: Dataset = dataset
+        self._indicator: Optional[str] = indicator
+        self._fold: int = fold
+        self._folds: int = folds
         self._folder: str = folder
         self._key: Optional[str] = None
         self._built: Optional[Dict[str, Any]] = None
@@ -135,13 +189,32 @@ class Experiment:
         """Dictionary which associates a filename to each result key. E.g., if the results have keys {'alpha', 'beta'}
         then one might indicate {'alpha': 'file_alpha', 'beta': 'file_beta'} to store each key in a different file. If
         a key is returned by the routine but is not present in this dictionary, it is stored in the main pickle file."""
-        return dict()
+        # store additional files for history/predictions in case of lagrangian dual or moving targets algorithm
+        additional_files = {'history': 'history'}
+        for s in range(Model.epochs):
+            additional_files[f'train_prediction_{s}'] = f'pred-{s}'
+            additional_files[f'val_prediction_{s}'] = f'pred-{s}'
+        return dict(
+            train_inputs='data',
+            train_target='data',
+            train_predictions='data',
+            val_inputs='data',
+            val_target='data',
+            val_predictions='data',
+            metric='metric',
+            **additional_files
+        )
 
     @property
     @abstractmethod
     def signature(self) -> Dict[str, Any]:
         """A json-compliant signature of the experiment, which must contain primitive types only."""
-        pass
+        return dict(
+            dataset=self._dataset.configuration,
+            indicator=self._indicator,
+            folds=self._folds,
+            fold=self._fold
+        )
 
     @property
     def _internal_results(self) -> Dict[str, Any]:
@@ -602,3 +675,302 @@ class Experiment:
             if str(parameter) != value:
                 return False
         return True
+
+    @staticmethod
+    def figures(folder: str = 'results', extensions: Iterable[str] = ('png',), plot: bool = False):
+        sns.set(context='poster', style='white', font_scale=1)
+        figures = {}
+        for dim in [1, 3]:
+            idx = 0
+            previous = []
+            graph = nx.Graph()
+            fig = plt.figure(figsize=(21, 7), tight_layout=True)
+            for layer, units in enumerate([dim, 16, 16, 8, 1]):
+                nodes = list(range(idx, idx + units))
+                graph.add_nodes_from(nodes, layer=layer)
+                graph.add_edges_from([(i, j) for i in previous for j in nodes])
+                previous = nodes
+                idx += units
+            pos = nx.multipartite_layout(graph, subset_key='layer')
+            nx.draw_networkx_nodes(graph, pos=pos, node_size=500, node_color='#FFF', edgecolors='#000', ax=fig.gca())
+            nx.draw_networkx_edges(graph, pos=pos, edge_color='#000', ax=fig.gca())
+            figures[dim] = fig
+        for extension in extensions:
+            for name, fig in figures.items():
+                fig.savefig(os.path.join(folder, f'network_{name}.{extension}'), bbox_inches='tight')
+        if plot:
+            for name, fig in figures.items():
+                fig.show()
+        for name, fig in figures.items():
+            plt.close(fig)
+
+    @staticmethod
+    def gedi(datasets: Iterable[str] = ('student', 'compas', 'law', 'adult'),
+             indicators: Iterable[str] = ('int', 'ind'),
+             folds: int = 5,
+             folder: str = 'results',
+             extensions: Iterable[str] = ('png', 'csv'),
+             plot: bool = False):
+        aliases = {None: '//', 'int': 'Inter', 'ind': 'Indep'}
+        datasets = {dataset: Dataset(name=dataset, continuous=True) for dataset in datasets}
+        indicators = {aliases[ind]: ind for ind in [None, *indicators]}
+
+        def configuration(_ds, _al, _fl):
+            d = datasets[_ds]
+            p = d.protected_indices
+            # return a list of metrics for loss and gedi
+            return dict(Dataset=_ds, regularizer=_al, fold=_fl), [
+                Loss(classification=d.classification, name='Loss'),
+                Fairness(indicator='int', protected=p, scale=d, name='Inter'),
+                Fairness(indicator='ind', protected=p, scale=d, name='Indep')
+            ]
+
+        return Experiment._experiment(
+            alias='gedi',
+            configuration=configuration,
+            datasets=datasets,
+            indicators=indicators,
+            folds=folds,
+            folder=folder,
+            extensions=extensions,
+            plot=plot
+        )
+
+    @staticmethod
+    def baselines(datasets: Iterable[str] = ('compas', 'law', 'adult'),
+                  indicators: Iterable[str] = ('int', 'edf', 'spsf'),
+                  folds: int = 5,
+                  folder: str = 'results',
+                  extensions: Iterable[str] = ('png', 'csv'),
+                  plot: bool = False):
+        aliases = {None: '//', 'int': 'GeDI', 'edf': 'EDF', 'spsf': 'SPSF'}
+        datasets = {dataset: Dataset(name=dataset, continuous=False) for dataset in datasets}
+        indicators = {aliases[ind]: ind for ind in [None, *indicators]}
+
+        def configuration(_ds, _al, _fl):
+            d = datasets[_ds]
+            p = d.protected_indices
+            # return a list of metrics for loss and fairness indicators
+            return dict(Dataset=_ds, regularizer=_al, fold=_fl), [
+                Loss(classification=d.classification, name='Loss'),
+                Fairness(indicator='int', protected=p, scale=d, name='GeDI'),
+                Fairness(indicator='edf', protected=p, scale=d, name='EDF'),
+                Fairness(indicator='spsf', protected=p, scale=d, name='SPSF')
+            ]
+
+        return Experiment._experiment(
+            alias='baselines',
+            configuration=configuration,
+            datasets=datasets,
+            indicators=indicators,
+            folds=folds,
+            folder=folder,
+            extensions=extensions,
+            plot=plot
+        )
+
+    @staticmethod
+    def _experiment(alias: str,
+                    configuration: Callable[..., Tuple[Dict[str, Any], Iterable[Metric]]],
+                    datasets: Dict[str, Dataset],
+                    indicators: Dict[str, str],
+                    folds: int,
+                    folder: str,
+                    extensions: Iterable[str],
+                    plot: bool):
+        assert len(datasets) > 0, "Please pass at least one dataset"
+        sns.set(context='poster', style='whitegrid', font_scale=1)
+        # +------------------------------------------------------------------------------------------------------------+
+        # |                                              RUN EXPERIMENTS                                               |
+        # +------------------------------------------------------------------------------------------------------------+
+        metrics = []
+        figures = {}
+        experiments = {}
+        # iterate over dataset and batches
+        for name, dataset in datasets.items():
+            # use dictionaries for dataset to retrieve correct configuration
+            sub_experiments = Experiment.execute(
+                folder=folder,
+                save_time=0,
+                verbose=True,
+                dataset={name: dataset},
+                indicator=indicators,
+                fold=list(range(folds)),
+                folds=folds
+            )
+            experiments.update(sub_experiments)
+            # +--------------------------------------------------------------------------------------------------------+
+            # |                                             FETCH METRICS                                              |
+            # +--------------------------------------------------------------------------------------------------------+
+            results = []
+            for i, (index, exp) in enumerate(tqdm(sub_experiments.items(), desc='Fetching Metrics')):
+                # retrieve inputs
+                xtr = exp['train_inputs']
+                ytr = exp['train_target']
+                xvl = exp['val_inputs']
+                yvl = exp['val_target']
+                history = exp['history']
+                # compute indicators for each step
+                info, metrics = configuration(*index)
+                outputs = {
+                    **{f'train::{mtr.name}': history.get(f'train::{mtr.name}', []) for mtr in metrics},
+                    **{f'val::{mtr.name}': history.get(f'val::{mtr.name}', []) for mtr in metrics},
+                }
+                # if the indicators are already pre-computed, load them
+                if np.all([len(v) == len(history['step']) for v in outputs.values()]):
+                    df = pd.DataFrame(outputs).melt()
+                    df['split'] = df['variable'].map(lambda v: v.split('::')[0].title())
+                    df['metric'] = df['variable'].map(lambda v: v.split('::')[1])
+                    df['step'] = list(history['step']) * len(outputs)
+                    for key, value in info.items():
+                        df[key] = value
+                    df = df.drop(columns='variable').to_dict(orient='records')
+                    results.extend(df)
+                # otherwise, compute and re-serialize them
+                else:
+                    for step in history['step']:
+                        info['step'] = step
+                        pvl = exp[f'val_prediction_{step}']
+                        ptr = exp[f'train_prediction_{step}']
+                        for mtr in metrics:
+                            for split, (x, y, p) in zip(['train', 'val'], [(xtr, ytr, ptr), (xvl, yvl, pvl)]):
+                                # if there is already a value use it, otherwise compute the metric and append the value
+                                output_list = outputs[f'{split}::{mtr.name}']
+                                if len(output_list) > step:
+                                    value = output_list[step]
+                                else:
+                                    value = mtr(x=x, y=y, p=p)
+                                    output_list.append(value)
+                                results.append({**info, 'metric': mtr.name, 'split': split.title(), 'value': value})
+                    exp.update(history={**history, **outputs})
+            metrics = [metric.name for metric in metrics]
+            results = pd.DataFrame(results)
+            # +--------------------------------------------------------------------------------------------------------+
+            # |                                             PLOT HISTORY                                               |
+            # +--------------------------------------------------------------------------------------------------------+
+            palette = PALETTE[:len(results['regularizer'].unique())]
+            col = len(metrics) + 1
+            epochs = Model.epochs
+            figures[name], axes = plt.subplots(2, col, figsize=(5 * col, 8), tight_layout=True)
+            for i, split in enumerate(['Train', 'Val']):
+                for j, metric in enumerate(metrics):
+                    j += 1
+                    data = results[np.logical_and(results['split'] == split, results['metric'] == metric)]
+                    sns.lineplot(
+                        data=data,
+                        x='step',
+                        y='value',
+                        estimator='mean',
+                        errorbar='sd',
+                        linewidth=2,
+                        hue='regularizer',
+                        style='regularizer',
+                        palette=palette,
+                        ax=axes[i, j]
+                    )
+                    title = metric if metric == 'Loss' else f'% {metric}'
+                    axes[i, j].set_title(f"{title} - {split.title()}", pad=10)
+                    axes[i, j].get_legend().remove()
+                    axes[i, j].set_xticks([0, (epochs - 1) // 2, epochs - 1], labels=[1, epochs // 2, epochs])
+                    axes[i, j].set_xlim([0, epochs - 1])
+                    axes[i, j].set_xlabel(None)
+                    axes[i, j].set_ylabel(None)
+                    if i == 1:
+                        lb = min([axes[i, j].get_ylim()[0] for i in [0, 1]]) if metric == 'Loss' else 0
+                        ub = max([axes[i, j].get_ylim()[1] for i in [0, 1]])
+                        axes[0, j].set_ylim((lb, ub))
+                        axes[1, j].set_ylim((lb, ub))
+            # get and plot times
+            data = pd.DataFrame([{
+                'regularizer': rg,
+                'fold': fl,
+                'time': experiment.elapsed_time
+            } for (_, rg, fl), experiment in sub_experiments.items()])
+            sns.barplot(
+                data=data,
+                x='regularizer',
+                y='time',
+                estimator='mean',
+                errorbar='sd',
+                linewidth=2,
+                hue='regularizer',
+                palette=palette,
+                ax=axes[1, 0]
+            )
+            axes[1, 0].set_title('Time (s)', pad=10)
+            axes[1, 0].set_xlabel(None)
+            axes[1, 0].set_ylabel(None)
+            # plot legend
+            handles, labels = axes[0, 1].get_legend_handles_labels()
+            axes[0, 0].legend(handles, labels, title='REGULARIZER', loc='center left', labelspacing=1.2, frameon=False)
+            axes[0, 0].spines['top'].set_visible(False)
+            axes[0, 0].spines['right'].set_visible(False)
+            axes[0, 0].spines['bottom'].set_visible(False)
+            axes[0, 0].spines['left'].set_visible(False)
+            axes[0, 0].set_xticks([])
+            axes[0, 0].set_yticks([])
+        # +------------------------------------------------------------------------------------------------------------+
+        # |                                               PRINT OUTPUTS                                                |
+        # +------------------------------------------------------------------------------------------------------------+
+        outputs = []
+        # retrieve results
+        for (ds, rg, fl), experiment in experiments.items():
+            configuration = dict(Dataset=ds, Regularizer=rg)
+            outputs.append({**configuration, 'split': 'train', 'metric': 'Time', 'value': experiment.elapsed_time})
+            for i, split in enumerate(['train', 'val']):
+                for j, metric in enumerate(metrics):
+                    value = experiment['history'][f'{split}::{metric}'][Model.epochs - 1]
+                    outputs.append({**configuration, 'split': split, 'metric': metric, 'value': value})
+        outputs = pd.DataFrame(outputs).groupby(
+            by=['Dataset', 'Regularizer', 'split', 'metric'],
+            as_index=False
+        ).agg(['mean', 'std'])
+        outputs.columns = ['Dataset', 'regularizer', 'split', 'metric', 'mean', 'std']
+        # build tex file
+        tex = outputs.copy()
+        text = []
+        for _, r in tex.iterrows():
+            scale = 1 if r['metric'] == 'Time' else 100
+            form = '02.2f' if r['metric'] == 'Loss' else '02.0f'
+            mean = f"{scale * r['mean']:{form}}"
+            std = f"{scale * r['std']:{form}}"
+            text.append(f'{mean} ± {std}')
+        tex['text'] = text
+        tex = tex.pivot(index=['Dataset', 'regularizer'], columns=['metric', 'split'], values='text')
+        columns, header, subheader = '\\begin{tabular}{c', '\\textbf{Regularizer}', ''
+        for metric in metrics:
+            metric = 'Loss ($\\times 10^2$)' if metric == 'Loss' else f'\\% {metric}'
+            header += ' & \\multicolumn{2}{c|}{\\textbf{' + metric + '}}'
+            subheader += ' & \\textbf{train} & \\textbf{val}'
+            columns += '|cc'
+        lines = [columns + '|c}', '\\toprule', header + ' & \\textbf{Time (s)}\\\\', subheader + ' & \\\\']
+        length = str(2 * len(metrics) + 2)
+        for ds, group in tex.reset_index().groupby('Dataset', as_index=False):
+            info = '\\textbf{Dataset}: \\begin{minipage}[b]{22pt}' + ds.title() + '\\end{minipage}'
+            info += '(\\# ' + str(len(datasets[ds])) + ') \\qquad\n\\textbf{Protected}:'
+            lines += ['\\midrule', '\\multicolumn{' + length + '}{l}{\n' + info + '\n}\\\\', '\\midrule']
+            columns = [(m, s) for m in metrics for s in ['train', 'val']]
+            group = group[[('regularizer', '')] + columns + [('Time', 'train')]]
+            lines += group.to_latex(header=False, index=False).split('\n')[3:-3]
+        lines += ['\\bottomrule', '\\end{tabular}']
+        tex = '\n'.join(lines)
+        # +--------------------------------------------------------------------------------------------------------+
+        # |                                             STORE RESULTS                                              |
+        # +--------------------------------------------------------------------------------------------------------+
+        for extension in extensions:
+            if extension == 'tex':
+                file = open(os.path.join(folder, f'{alias}.tex'), 'w')
+                file.writelines(tex)
+                file.close()
+            elif extension == 'csv':
+                file = os.path.join(folder, f'{alias}.csv')
+                outputs.to_csv(file, header=True, index=False, float_format=lambda v: f"{v:.2f}")
+            else:
+                for name, fig in figures.items():
+                    fig.savefig(os.path.join(folder, f'{alias}_{name}.{extension}'), bbox_inches='tight')
+        if plot:
+            for name, fig in figures.items():
+                fig.suptitle(f"Learning History for {name.title()}")
+                fig.show()
+        for name, fig in figures.items():
+            plt.close(fig)

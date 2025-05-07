@@ -1,6 +1,6 @@
 services:
   main:
-    image: python-experiments
+    image: intersectional-fairness
     build: .
     volumes:
       - type: bind
@@ -9,10 +9,28 @@ services:
         bind:
           create_host_path: true
 
+  baselines:
+    image: intersectional-fairness
+    depends_on: [ main ]
+    command: python baselines.py --folder results
+    volumes:
+      - type: bind
+        source: ${FOLDER:-results}
+        target: /project/results
+
   clear:
-    image: python-experiments
+    image: intersectional-fairness
     depends_on: [ main ]
     command: python clear.py --folder results
+    volumes:
+      - type: bind
+        source: ${FOLDER:-results}
+        target: /project/results
+
+  gedi:
+    image: intersectional-fairness
+    depends_on: [ main ]
+    command: python gedi.py --folder results
     volumes:
       - type: bind
         source: ${FOLDER:-results}

@@ -3,8 +3,6 @@ import os
 
 from experiments import Experiment
 
-EXPERIMENTS = {exp.alias(): exp for exp in Experiment.__subclasses__()}
-
 # build argument parser
 parser = argparse.ArgumentParser(description='Clears the results in the experiment files')
 parser.add_argument(
@@ -13,15 +11,6 @@ parser.add_argument(
     type=str,
     default='results',
     help='the path where to search and store the results and the exports'
-)
-parser.add_argument(
-    '-e',
-    '--experiments',
-    type=str,
-    nargs='+',
-    default=EXPERIMENTS.keys(),
-    choices=EXPERIMENTS.keys(),
-    help='the name of the experiment (or list of such) to clear'
 )
 parser.add_argument(
     '-c',
@@ -73,7 +62,4 @@ if args.pop('exports') is False:
         print('  >', k, '-->', v)
     print()
     conditions = args.pop('conditions')
-    for exp in args.pop('experiments'):
-        print(f'{exp.upper()} EXPERIMENT:')
-        EXPERIMENTS[exp].clear(folder=folder, *conditions, **args)
-        print()
+    Experiment.clear(folder=folder, *conditions, **args)
