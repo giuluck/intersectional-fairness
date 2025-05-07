@@ -1,0 +1,19 @@
+services:
+  main:
+    image: python-experiments
+    build: .
+    volumes:
+      - type: bind
+        source: ${FOLDER:-results}
+        target: /project/results
+        bind:
+          create_host_path: true
+
+  clear:
+    image: python-experiments
+    depends_on: [ main ]
+    command: python clear.py --folder results
+    volumes:
+      - type: bind
+        source: ${FOLDER:-results}
+        target: /project/results
