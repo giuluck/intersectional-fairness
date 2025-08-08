@@ -12,7 +12,9 @@ for name in ["lightning_fabric", "pytorch_lightning.utilities.rank_zero", "pytor
     log.setLevel(logging.ERROR)
 
 # build argument parser
-parser = argparse.ArgumentParser(description='Train multiple neural networks using joint/independent gedi regularizers')
+parser = argparse.ArgumentParser(
+    description='Train multiple neural networks using intersectional/independent gedi regularizers'
+)
 parser.add_argument(
     '-f',
     '--folder',

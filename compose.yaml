@@ -27,6 +27,15 @@ services:
         source: ${FOLDER:-results}
         target: /project/results
 
+  figures:
+    image: intersectional-fairness
+    depends_on: [ main ]
+    command: python figures.py --folder results
+    volumes:
+      - type: bind
+        source: ${FOLDER:-results}
+        target: /project/results
+
   gedi:
     image: intersectional-fairness
     depends_on: [ main ]

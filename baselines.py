@@ -12,7 +12,9 @@ for name in ["lightning_fabric", "pytorch_lightning.utilities.rank_zero", "pytor
     log.setLevel(logging.ERROR)
 
 # build argument parser
-parser = argparse.ArgumentParser(description='Train multiple neural networks using different fairness regularizers')
+parser = argparse.ArgumentParser(
+    description='Train multiple neural networks using different intersectional fairness regularizers'
+)
 parser.add_argument(
     '-f',
     '--folder',

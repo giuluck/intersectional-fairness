@@ -939,7 +939,7 @@ class Experiment:
         tex = tex.pivot(index=['Dataset', 'regularizer'], columns=['metric', 'split'], values='text')
         columns, header, subheader = '\\begin{tabular}{c', '\\textbf{Regularizer}', ''
         for metric in metrics:
-            metric = 'Loss ($\\times 10^2$)' if metric == 'Loss' else f'\\% {metric}'
+            metric = 'Task Loss ($\\times 10^2$)' if metric == 'Loss' else f'\\% {metric}'
             header += ' & \\multicolumn{2}{c|}{\\textbf{' + metric + '}}'
             subheader += ' & \\textbf{train} & \\textbf{val}'
             columns += '|cc'
@@ -947,7 +947,7 @@ class Experiment:
         length = str(2 * len(metrics) + 2)
         for ds, group in tex.reset_index().groupby('Dataset', as_index=False):
             info = '\\textbf{Dataset}: \\begin{minipage}[b]{22pt}' + ds.title() + '\\end{minipage}'
-            info += '(\\# ' + str(len(datasets[ds])) + ') \\qquad\n\\textbf{Protected}:'
+            info += str(datasets[ds].x.shape) + '\\qquad\n\\textbf{Protected}:'
             lines += ['\\midrule', '\\multicolumn{' + length + '}{l}{\n' + info + '\n}\\\\', '\\midrule']
             columns = [(m, s) for m in metrics for s in ['train', 'val']]
             group = group[[('regularizer', '')] + columns + [('Time', 'train')]]
