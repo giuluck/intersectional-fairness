@@ -680,6 +680,7 @@ class Experiment:
     def figures(folder: str = 'results', extensions: Iterable[str] = ('png',), plot: bool = False):
         sns.set(context='poster', style='white', font_scale=1)
         figures = {}
+        # neural networks figures
         for dim in [1, 3]:
             idx = 0
             previous = []
@@ -694,10 +695,29 @@ class Experiment:
             pos = nx.multipartite_layout(graph, subset_key='layer')
             nx.draw_networkx_nodes(graph, pos=pos, node_size=500, node_color='#FFF', edgecolors='#000', ax=fig.gca())
             nx.draw_networkx_edges(graph, pos=pos, edge_color='#000', ax=fig.gca())
-            figures[dim] = fig
+            figures[f'network_{dim}'] = fig
+        # projection example figure
+        index = np.random.default_rng(100).choice(range(1000), size=10, replace=False)
+        space = np.linspace(0, 2 * np.pi, 1000)
+        sx = space - 0.8
+        sy = -1.1 * np.ones(1000)
+        fx = space
+        fy = np.sin(fx)
+        sns.set(style="white", context="talk")
+        fig = plt.figure(figsize=(16, 9), tight_layout=True)
+        sns.lineplot(x=sx, y=sy, color='red', linewidth=1, alpha=0.4, zorder=0, ax=fig.gca())
+        sns.scatterplot(x=sx[index], y=sy[index], color='black', s=100, ax=fig.gca())
+        sns.lineplot(x=fx, y=fy, color='red', linewidth=2, zorder=0, ax=fig.gca())
+        sns.scatterplot(x=fx[index], y=fy[index], color='black', s=100, ax=fig.gca())
+        for x1, y1, x2, y2 in zip(sx[index], sy[index], fx[index], fy[index]):
+            sns.lineplot(x=[x1, x2], y=[y1, y2], color='green', linestyle='--', linewidth=0.6, zorder=0, ax=fig.gca())
+        fig.gca().axis('off')
+        figures['projection'] = fig
+        # save and plot
+        os.makedirs(folder, exist_ok=True)
         for extension in extensions:
             for name, fig in figures.items():
-                fig.savefig(os.path.join(folder, f'network_{name}.{extension}'), bbox_inches='tight')
+                fig.savefig(os.path.join(folder, f'{name}.{extension}'), bbox_inches='tight')
         if plot:
             for name, fig in figures.items():
                 fig.show()
