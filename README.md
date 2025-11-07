@@ -4,8 +4,21 @@ This repository provides the code for reproducing the results obtained in the pa
 
 ## Paper Citation
 
-This paper will soon appear in the proceedings of the European Conference of AI (ECAI) 2025.
-If you use this codebase, please cite the paper accordingly.
+If you use this codebase, please cite the paper accordingly using the following information:
+```
+@inbook{Giuliani2025,
+  title        = {Achieving Intersectional Algorithmic Fairness by Constructing a Maximal Correlation Latent Space},
+  author       = {Giuliani,  Luca and Lombardi,  Michele},
+  year         = {2025},
+  month        = {oct},
+  booktitle    = {ECAI 2025},
+  publisher    = {IOS Press},
+  doi          = {10.3233/faia251105},
+  isbn         = {9781643686318},
+  issn         = {1879-8314},
+  url          = {http://dx.doi.org/10.3233/FAIA251105}
+}
+```
 
 ## Installation Setup
 
